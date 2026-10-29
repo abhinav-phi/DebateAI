@@ -2,14 +2,17 @@ package services
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"math"
+	"math/big"
 	"sync"
 	"time"
 
 	"arguehub/db"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // MatchmakingPool represents a user in the matchmaking queue
@@ -175,7 +178,7 @@ func (ms *MatchmakingService) createRoomForMatch(user1, user2 *MatchmakingPool) 
 	// Use atomic operation to create room and remove users from pool
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	roomID := generateRoomID() // Generate room ID (see ID strategy comment below)
+	roomID := ""
 
 	// If DB is not initialized, skip persistence but still complete the match.
 	if db.MongoDatabase == nil {
@@ -207,8 +210,15 @@ func (ms *MatchmakingService) createRoomForMatch(user1, user2 *MatchmakingPool) 
 		"createdAt": time.Now(),
 		"status":    "waiting", // waiting, active, completed
 	}
-	// Insert the room directly
-	_, err := roomCollection.InsertOne(ctx, room)
+	// Insert the room, retrying if the generated ID already exists
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		roomID = GenerateRoomID()
+		room["_id"] = roomID
+		if _, err = roomCollection.InsertOne(ctx, room); !mongo.IsDuplicateKeyError(err) {
+			break
+		}
+	}
 	if err != nil {
 		ms.mutex.Lock()
 		ms.pool[user1.UserID] = user1
@@ -244,10 +254,13 @@ func (ms *MatchmakingService) cleanupInactiveUsers() {
 	}
 }
 
-// generateRoomID creates a random six-digit room ID
-func generateRoomID() string {
-	// Simple implementation - in production, ensure uniqueness
-	return fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
+// GenerateRoomID returns a six-digit room ID from a cryptographic source.
+func GenerateRoomID() string {
+	n, err := rand.Int(rand.Reader, big.NewInt(900000))
+	if err != nil {
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
+	}
+	return fmt.Sprintf("%06d", n.Int64()+100000)
 }
 
 // RoomCreatedCallback is a function type for notifying when a room is created

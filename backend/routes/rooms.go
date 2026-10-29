@@ -3,9 +3,7 @@ package routes
 import (
 	"context"
 	"math"
-	"math/rand"
 	"net/http"
-	"strconv"
 	"time"
 
 	"arguehub/db"
@@ -33,12 +31,6 @@ type Participant struct {
 	Elo       int    `json:"elo" bson:"elo"`
 	AvatarURL string `json:"avatarUrl" bson:"avatarUrl,omitempty"`
 	Email     string `json:"email" bson:"email,omitempty"`
-}
-
-// generateRoomID creates a random six-digit room ID as a string.
-func generateRoomID() string {
-	rand.Seed(time.Now().UnixNano())
-	return strconv.Itoa(rand.Intn(900000) + 100000)
 }
 
 // CreateRoomHandler handles POST /rooms and creates a new debate room.
@@ -102,17 +94,21 @@ func CreateRoomHandler(c *gin.Context) {
 		Email:     user.Email,
 	}
 
-	roomID := generateRoomID()
 	newRoom := Room{
-		ID:           roomID,
 		Type:         input.Type,
 		OwnerID:      creatorParticipant.ID,
 		Participants: []Participant{creatorParticipant},
 	}
 
 	roomCollection := db.MongoDatabase.Collection("rooms")
-	_, err = roomCollection.InsertOne(ctx, newRoom)
-	if err != nil {
+	var insertErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		newRoom.ID = services.GenerateRoomID()
+		if _, insertErr = roomCollection.InsertOne(ctx, newRoom); !mongo.IsDuplicateKeyError(insertErr) {
+			break
+		}
+	}
+	if insertErr != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create room"})
 		return
 	}
